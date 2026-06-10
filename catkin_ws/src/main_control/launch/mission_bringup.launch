@@ -43,8 +43,30 @@
   <arg name="nav_v_angular" default="1.0"/>
 
   <!-- 任務交棒參數 -->
-  <arg name="hard_turn_trigger_count" default="99"/>
+  <!-- <arg name="hard_turn_trigger_count" default="99"/> -->
   <arg name="handoff_stop_duration"   default="1.0"/>
+
+  <!-- 紅綠燈等待（緩衝停車後、交棒給光達避障前） -->
+  <arg name="traffic_light_topic"             default="/traffic_light"/>
+  <arg name="traffic_light_no_detect_timeout" default="3.0"/>
+
+  <!-- 第 3 次 visual 轉彎新流程（取代寫死 hard turn） -->
+  <arg name="turn_pixel_threshold_3"   default="25000.0"/>
+  <arg name="t3_ultrasonic_threshold"  default="8.0"/>     <!-- cm -->
+  <arg name="t3_approach_speed"        default="0.2"/>     <!-- m/s -->
+  <arg name="t3_odom_turn_angular"     default="1.0"/>     <!-- rad/s -->
+  <arg name="t3_odom_turn_tol_deg"     default="5.0"/>     <!-- deg -->
+  <arg name="t3_align_angular"         default="0.4"/>     <!-- rad/s -->
+  <arg name="t3_align_tol_deg"         default="3.0"/>     <!-- deg -->
+  <arg name="t3_align_timeout"         default="2.0"/>     <!-- s -->
+  <arg name="t3_forward_speed"         default="0.15"/>    <!-- m/s -->
+  <arg name="t3_forward_dist"          default="0.1"/>     <!-- m -->
+
+  <!-- 超音波停車（走線最前 X 秒內偵測停止標示，遇到後停車；標示移走後恢復且不再偵測） -->
+  <arg name="ultrasonic_topic"              default="/ultrasonic"/>
+  <arg name="ultrasonic_watch_duration"     default="10.0"/>
+  <arg name="ultrasonic_stop_threshold"     default="20.0"/>
+  <arg name="ultrasonic_resume_threshold"   default="25.0"/>
 
 
   <!-- ============ 共用底層：rosserial ============ -->
@@ -70,6 +92,10 @@
     <param name="width"       value="$(arg cam2_width)"/>
     <param name="height"      value="$(arg cam2_height)"/>
   </node>
+
+
+  <!-- ============ 紅綠燈感測器（Grove Vision AI V2, USB-C 串列） ============ -->
+  <include file="$(find traffic_light)/launch/traffic_light.launch"/>
 
 
   <!-- ============ 光達 driver + 前處理（暖機，切換零延遲） ============ -->
@@ -159,6 +185,28 @@
     <!-- 任務交棒：第 N 次 vision 硬轉完成後 -->
     <param name="hard_turn_trigger_count" value="$(arg hard_turn_trigger_count)"/>
     <param name="handoff_stop_duration"   value="$(arg handoff_stop_duration)"/>
+
+    <!-- 超音波停車（僅生效一次，視窗內 < stop 停車，>= resume 解除並關閉偵測） -->
+    <param name="ultrasonic_topic"            value="$(arg ultrasonic_topic)"/>
+    <param name="ultrasonic_watch_duration"   value="$(arg ultrasonic_watch_duration)"/>
+    <param name="ultrasonic_stop_threshold"   value="$(arg ultrasonic_stop_threshold)"/>
+    <param name="ultrasonic_resume_threshold" value="$(arg ultrasonic_resume_threshold)"/>
+
+    <!-- 紅綠燈等待：handoff 緩衝停車後進入，green 或連續 no_detect_timeout 秒無偵測即放行 -->
+    <param name="traffic_light_topic"             value="$(arg traffic_light_topic)"/>
+    <param name="traffic_light_no_detect_timeout" value="$(arg traffic_light_no_detect_timeout)"/>
+
+    <!-- 第 3 次 visual 轉彎新流程：T3_APPROACH -> T3_TURN(odom 90°) -> T3_ALIGN -> T3_FORWARD -> handoff -->
+    <param name="turn_pixel_threshold_3"  value="$(arg turn_pixel_threshold_3)"/>
+    <param name="t3_ultrasonic_threshold" value="$(arg t3_ultrasonic_threshold)"/>
+    <param name="t3_approach_speed"       value="$(arg t3_approach_speed)"/>
+    <param name="t3_odom_turn_angular"    value="$(arg t3_odom_turn_angular)"/>
+    <param name="t3_odom_turn_tol_deg"    value="$(arg t3_odom_turn_tol_deg)"/>
+    <param name="t3_align_angular"        value="$(arg t3_align_angular)"/>
+    <param name="t3_align_tol_deg"        value="$(arg t3_align_tol_deg)"/>
+    <param name="t3_align_timeout"        value="$(arg t3_align_timeout)"/>
+    <param name="t3_forward_speed"        value="$(arg t3_forward_speed)"/>
+    <param name="t3_forward_dist"         value="$(arg t3_forward_dist)"/>
 
     <remap from="arduino_vel" to="$(arg cmd_vel_topic)"/>
   </node>

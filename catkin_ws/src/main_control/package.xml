@@ -23,4 +23,5 @@
   <exec_depend>camera</exec_depend>
   <exec_depend>lane_follower</exec_depend>
   <exec_depend>nav_scripts</exec_depend>
+  <exec_depend>traffic_light</exec_depend>
 </package>
