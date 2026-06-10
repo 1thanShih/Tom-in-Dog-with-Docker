@@ -65,12 +65,14 @@
   <!-- 超音波停車（走線最前 X 秒內偵測停止標示，遇到後停車；標示移走後恢復且不再偵測） -->
   <!-- ultrasonic_initial_blank: watch 視窗開頭忽略超音波讀數的秒數（過濾啟動瞬間雜訊） -->
   <!-- ultrasonic_stable_count: 連續幾次 < stop_threshold 才視為真正觸發停車（過濾車道校正時誤照牆壁） -->
+  <!-- ultrasonic_resume_delay: 標示移走後先原地再停幾秒才恢復相機走線（標示剛移開可能還在鏡頭前） -->
   <arg name="ultrasonic_topic"              default="/ultrasonic"/>
   <arg name="ultrasonic_watch_duration"     default="10.0"/>
   <arg name="ultrasonic_stop_threshold"     default="20.0"/>
   <arg name="ultrasonic_resume_threshold"   default="25.0"/>
   <arg name="ultrasonic_initial_blank"      default="2.0"/>
   <arg name="ultrasonic_stable_count"       default="3"/>
+  <arg name="ultrasonic_resume_delay"       default="2.0"/>
 
   <!-- 丟失路標時的找標流程：先倒退 backup_duration 秒，再切到左右掃描 -->
   <!-- scan_angular_z: 倒退後左右掃描的擺動角速度 (rad/s)，越大擺幅越大 -->
@@ -204,6 +206,7 @@
     <param name="ultrasonic_resume_threshold" value="$(arg ultrasonic_resume_threshold)"/>
     <param name="ultrasonic_initial_blank"    value="$(arg ultrasonic_initial_blank)"/>
     <param name="ultrasonic_stable_count"     value="$(arg ultrasonic_stable_count)"/>
+    <param name="ultrasonic_resume_delay"     value="$(arg ultrasonic_resume_delay)"/>
 
     <!-- 丟失路標時的找標流程：先倒退 backup_duration 秒，再切到左右掃描 -->
     <param name="lost_sign_backup_duration"   value="$(arg lost_sign_backup_duration)"/>

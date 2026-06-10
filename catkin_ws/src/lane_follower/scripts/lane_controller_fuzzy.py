@@ -219,7 +219,9 @@ class LaneControllerFuzzy:
         # 從第一次收到 lane_detect 起算 ultrasonic_watch_duration 秒內，
         # 若 /ultrasonic (Float32, cm) 連續 ultrasonic_stable_count 次 < stop_threshold
         # 視為遇到停止標示，停車（發全 0 cmd）。
-        # 等到值回升 >= resume_threshold 視為標示被移走，恢復走線，並從此關閉偵測（即使視窗未過）。
+        # 等到值回升 >= resume_threshold 視為標示被移走，但不立刻恢復走線：
+        # 先原地再停 ultrasonic_resume_delay 秒（標示剛移開可能還在鏡頭前，
+        # 避免影響相機走線/被誤判成路標），delay 結束才恢復走線並從此關閉偵測（即使視窗未過）。
         # 視窗過期且尚未觸發停車 -> 直接關閉偵測。
         # 此外 watch_duration 期間 turn_callback 整段忽略，避免停止標示被攝影機誤判成右轉。
         # 視窗開頭 ultrasonic_initial_blank 秒不採信任何超音波讀數（過濾上電瞬間的雜訊）。
@@ -229,11 +231,13 @@ class LaneControllerFuzzy:
         self.ultrasonic_resume_threshold = rospy.get_param('~ultrasonic_resume_threshold', 25.0)
         self.ultrasonic_stable_count = int(rospy.get_param('~ultrasonic_stable_count', 3))
         self.ultrasonic_initial_blank = rospy.get_param('~ultrasonic_initial_blank', 2.0)
+        self.ultrasonic_resume_delay = rospy.get_param('~ultrasonic_resume_delay', 2.0)
         self.lane_start_time = None
         self.ultrasonic_enabled = True
         self.ultrasonic_stopping = False
         self.last_ultrasonic_cm = None
         self.ultrasonic_below_streak = 0
+        self.ultrasonic_resume_end_time = None  # 標示移走後的等待截止時間（None = 尚未觸發 resume）
 
         # ---- Lost-sign backup（丟失路標時先倒退、再左右掃描） ----
         # 原本只有 is_scanning 直接左右轉；改成先 is_backing_up 倒退一段時間再切到 is_scanning。
@@ -607,15 +611,29 @@ class LaneControllerFuzzy:
             self.lane_start_time = now
 
         if self.ultrasonic_stopping:
-            # 標示已移走（且超過 resume 門檻）-> 解除停車，並關閉偵測（即使視窗未過）
-            if (self.last_ultrasonic_cm is not None
-                    and self.last_ultrasonic_cm >= self.ultrasonic_resume_threshold):
+            if self.ultrasonic_resume_end_time is not None:
+                # 標示已移走，正在等 resume delay：期間維持停車、ultrasonic_enabled 不放開
+                # （turn_callback 持續被擋，避免剛移開的標示在鏡頭前被誤判）
+                if now < self.ultrasonic_resume_end_time:
+                    self.cmd_pub.publish(Twist())
+                    return
+                # delay 走完 -> 解除停車，並關閉偵測（即使視窗未過）
                 self.ultrasonic_stopping = False
                 self.ultrasonic_enabled = False
                 self.ultrasonic_below_streak = 0
-                rospy.loginfo("[ultrasonic] %.1f cm >= resume %.1f -> 解除停車，關閉偵測",
-                              self.last_ultrasonic_cm, self.ultrasonic_resume_threshold)
+                self.ultrasonic_resume_end_time = None
+                rospy.loginfo("[ultrasonic] resume delay %.1fs 結束 -> 解除停車，恢復走線並關閉偵測",
+                              self.ultrasonic_resume_delay)
                 # 不 return，本筆 lane_detect 繼續往下跑正常走線/硬轉邏輯
+            elif (self.last_ultrasonic_cm is not None
+                    and self.last_ultrasonic_cm >= self.ultrasonic_resume_threshold):
+                # 標示已移走（且超過 resume 門檻）-> 先原地再停 resume_delay 秒才恢復走線
+                self.ultrasonic_resume_end_time = now + self.ultrasonic_resume_delay
+                rospy.loginfo("[ultrasonic] %.1f cm >= resume %.1f -> 標示移走，先停 %.1fs 再恢復走線",
+                              self.last_ultrasonic_cm, self.ultrasonic_resume_threshold,
+                              self.ultrasonic_resume_delay)
+                self.cmd_pub.publish(Twist())
+                return
             else:
                 self.cmd_pub.publish(Twist())
                 return
