@@ -1,0 +1,20 @@
+<!--
+  關卡測試：第 2 個彎（vision 硬轉 + 排程補轉）已完成，從之後的直線起跑，
+  一路跑到光達避障結束。
+
+  放車位置：第 2 個彎補轉完成後的直線上（一開始看不到第 3 個轉彎 sign）。
+  啟動後：hard_turn_count=2、超音波偵測關閉，下一個 sign 直接走 T3 流程
+          （T3_INITIAL_ALIGN -> T3_APPROACH -> T3_TURN -> T3_ALIGN -> T3_FORWARD），
+          之後接紅綠燈等待與光達避障。
+
+  啟動：
+    roslaunch main_control stage_after_turn2.launch
+-->
+<launch>
+  <arg name="cmd_vel_topic"         default="/arduino_vel"/>
+  <arg name="handoff_stop_duration" default="1.0"/>
+
+  <include file="$(find main_control)/launch/mission_bringup.launch" pass_all_args="true">
+    <arg name="start_stage" value="after_turn2"/>
+  </include>
+</launch>

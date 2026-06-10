@@ -42,6 +42,11 @@
   <arg name="nav_v_linear"  default="0.30"/>
   <arg name="nav_v_angular" default="1.0"/>
 
+  <!-- 分關卡起跑：full / after_ultrasonic / after_turn1 / after_turn2 / after_turn3
+       單獨測某一關用 stage_*.launch（內部 include 本檔並帶入對應值），
+       這裡保持 full = 完整任務，行為與原本相同 -->
+  <arg name="start_stage" default="full"/>
+
   <!-- 任務交棒參數（交棒由 T3_FORWARD 完成自動觸發） -->
   <arg name="handoff_stop_duration"   default="1.0"/>
 
@@ -171,6 +176,9 @@
   </node>
 
   <node pkg="lane_follower" type="lane_controller_fuzzy.py" name="lane_controller_fuzzy" output="screen">
+    <!-- 分關卡起跑（full 為完整任務） -->
+    <param name="start_stage" value="$(arg start_stage)"/>
+
     <param name="base_speed"  value="0.3"/>
     <param name="max_angular" value="1.1"/>
 

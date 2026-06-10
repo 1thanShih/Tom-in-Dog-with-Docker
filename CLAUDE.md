@@ -29,6 +29,14 @@ Launch the main mission (走線 → 硬轉觸發 → 光達避障交棒)：
 `roslaunch main_control mission_bringup.launch`
 （常用覆寫：`handoff_stop_duration:=1.0 cmd_vel_topic:=/arduino_vel`）
 
+Stage launches（單獨測某一關，從該關起點一路跑到光達結束；放車位置都是「該關完成後、看不到下一個 sign 的直線上」）：
+- `roslaunch main_control stage_after_ultrasonic.launch` — 超音波停止標示已過（`start_stage:=after_ultrasonic`，turn 偵測立即開放）。
+- `roslaunch main_control stage_after_turn1.launch` — 第 1 個彎（vision 硬轉＋排程補轉）已完成（`hard_turn_count=1`）。
+- `roslaunch main_control stage_after_turn2.launch` — 第 2 個彎已完成（`hard_turn_count=2`，下一個 sign 直接走 T3）。
+- `roslaunch main_control stage_after_turn3.launch` — T3 已完成，啟動即進緩衝停車＋紅綠燈等待，再交棒光達。
+- `roslaunch main_control stage_lidar_only.launch` — 只跑光達避障（include `nav_bringup.launch`，參數對齊 mission：`front_angle_range=10`、`dist_th_4=0.60`）。
+前四個都是薄 launch，include `mission_bringup.launch` 並帶入 `start_stage`（`lane_controller_fuzzy` 的 `~start_stage` private param，預設 `full` 行為不變）。
+
 Sub-system launches when iterating on a single layer:
 - `roslaunch lane_follower lane_detect_bringup.launch` — 走線 + 轉彎偵測 + fuzzy 控制（不含 lidar / odom）。
 - `roslaunch nav_scripts nav_bringup.launch nav_mode:=lidar_odom` — 光達避障獨立跑，啟動時 `wait_for_phase=false`，直接從 `S_FWD_1` 起跑。
@@ -83,7 +91,7 @@ Packages present in this repo:
      6. 走完直接設 `handoff_started=True`，銜接下方的緩衝停車 + 紅綠燈等待。T3 期間 `lane_callback` early-return、`turn_callback` 整段忽略。
    - **超音波停止標示**（最前段一次性）：第一次收到 `lane_detect` 起的 `~ultrasonic_watch_duration` 秒視窗內，訂閱 `~ultrasonic_topic` (`/ultrasonic`, std_msgs/Float32, 單位 cm)。值 `< ~ultrasonic_stop_threshold` 必須**連續 `~ultrasonic_stable_count` 次**（預設 3）才視為遇到停止標示 → cmd_vel 全 0；值回升 `>= ~ultrasonic_resume_threshold` 視為標示移走 → **先原地再停 `~ultrasonic_resume_delay` 秒**（預設 2.0，標示剛移開可能還在鏡頭前），delay 結束才解除停車、恢復相機走線並**永久關閉超音波偵測**（即使視窗未過）；delay 期間 `ultrasonic_enabled` 維持 True，`turn_callback` 持續被擋。視窗開頭 `~ultrasonic_initial_blank` 秒（預設 2.0）內不採信讀數（過濾啟動雜訊）。視窗過期且未觸發過停車也直接關閉。整個任務週期最多觸發一次。**`ultrasonic_enabled` 為 True 期間 `turn_callback` 整段忽略**（從 node 啟動到此次偵測結束），避免停止標示被攝影機誤判成右轉箭頭——不靠 `lane_start_time` 起算，避免 `turn_callback` 比 `lane_callback` 先跑時搶先放行。
    - **丟失路標的找標流程**：sign 進入 `approaching_sign` 後若 0.3 秒沒再收到 → 先進 `is_backing_up`，以 `~lost_sign_backup_speed` 倒退 `~lost_sign_backup_duration` 秒；倒退完才切到 `is_scanning` 做左右掃描。期間 turn_callback 偵測到 sign 會同時清掉 `is_backing_up` / `is_scanning`。
-3. 交棒流程（T3_FORWARD 結束後自動觸發，設 `handoff_started=True`）分兩個子階段：
+3. 交棒流程（T3_FORWARD 結束後自動觸發，設 `handoff_started=True`；整段由 `_t3_timer_cb` 50 Hz timer 的 `_handoff_step` 驅動，不依賴 `lane_detect` 持續發訊——停車線前抓不到車道線也不會卡死）分兩個子階段：
    - **A. 緩衝停車**：停 `~handoff_stop_duration` 秒，cmd_vel 全 0。
    - **B. 紅綠燈等待**：進入此狀態後 cmd_vel 持續全 0，訂閱 `~traffic_light_topic` (`/traffic_light`, std_msgs/String)。
      - 收到 `'green'` → 立即放行

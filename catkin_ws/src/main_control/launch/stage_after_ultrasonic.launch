@@ -1,0 +1,18 @@
+<!--
+  關卡測試：超音波停止標示那段已完成，從走線重新起跑，一路跑到光達避障結束。
+
+  放車位置：停止標示之後的直線上（一開始看不到第 1 個轉彎 sign）。
+  啟動後：超音波偵測直接關閉、turn 偵測立即開放，之後流程與完整任務相同
+          （硬轉 1 -> 硬轉 2 -> T3 -> 紅綠燈 -> 光達避障）。
+
+  啟動：
+    roslaunch main_control stage_after_ultrasonic.launch
+-->
+<launch>
+  <arg name="cmd_vel_topic"         default="/arduino_vel"/>
+  <arg name="handoff_stop_duration" default="1.0"/>
+
+  <include file="$(find main_control)/launch/mission_bringup.launch" pass_all_args="true">
+    <arg name="start_stage" value="after_ultrasonic"/>
+  </include>
+</launch>

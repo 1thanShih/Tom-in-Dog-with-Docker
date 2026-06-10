@@ -1,0 +1,20 @@
+<!--
+  關卡測試：第 3 個彎（T3 流程）已完成，從紅綠燈等待起跑，
+  接著交棒給光達避障跑到結束。
+
+  放車位置：T3_FORWARD 結束後的位置（紅綠燈/停止線前）。
+  啟動後：立刻進入緩衝停車 handoff_stop_duration 秒 -> 紅綠燈等待
+          （green 立即放行 / 連續 traffic_light_no_detect_timeout 秒無偵測放行）
+          -> /mission/phase = lidar_avoid -> 光達避障接管。
+
+  啟動：
+    roslaunch main_control stage_after_turn3.launch
+-->
+<launch>
+  <arg name="cmd_vel_topic"         default="/arduino_vel"/>
+  <arg name="handoff_stop_duration" default="1.0"/>
+
+  <include file="$(find main_control)/launch/mission_bringup.launch" pass_all_args="true">
+    <arg name="start_stage" value="after_turn3"/>
+  </include>
+</launch>

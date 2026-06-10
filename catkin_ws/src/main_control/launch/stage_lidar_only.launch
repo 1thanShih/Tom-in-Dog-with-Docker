@@ -1,0 +1,28 @@
+<!--
+  關卡測試：只跑最後的光達避障（不等紅綠燈、不開走線）。
+
+  放車位置：光達避障的起點（紅綠燈通過後的位置）。
+  啟動後：wait_for_phase=false，狀態機直接從 S_FWD_1 起跑
+          （S_FWD_1 -> 右轉 90 -> S_FWD_2 -> 左轉 90 -> S_FWD_3 -> 停車）。
+
+  內部 include nav_scripts/nav_bringup.launch（含 rosserial + rplidar +
+  lidar_filter + odometry），並把參數對齊 mission_bringup 的值
+  （front_angle_range=10、dist_th_4=0.60，nav_bringup 單獨跑的預設值不同）。
+
+  啟動：
+    roslaunch main_control stage_lidar_only.launch
+-->
+<launch>
+  <arg name="cmd_vel_topic" default="/arduino_vel"/>
+
+  <include file="$(find nav_scripts)/launch/nav_bringup.launch">
+    <arg name="nav_mode"          value="lidar_odom"/>
+    <arg name="cmd_vel_topic"     value="$(arg cmd_vel_topic)"/>
+    <!-- 對齊 mission_bringup 的參數 -->
+    <arg name="front_angle_range" value="10.0"/>
+    <arg name="dist_th_1"         value="0.30"/>
+    <arg name="dist_th_2"         value="0.30"/>
+    <arg name="dist_th_3"         value="0.45"/>
+    <arg name="dist_th_4"         value="0.60"/>
+  </include>
+</launch>

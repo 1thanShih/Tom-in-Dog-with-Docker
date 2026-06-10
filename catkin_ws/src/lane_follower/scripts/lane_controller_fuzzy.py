@@ -246,6 +246,34 @@ class LaneControllerFuzzy:
         self.is_backing_up = False
         self.backup_start_time = 0.0
 
+        # ---- 分關卡起跑 start_stage（單獨測某一關，從該關起點一路跑到光達結束） ----
+        # 'full'             - 完整任務（預設，行為與原本完全相同）
+        # 'after_ultrasonic' - 超音波停止標示那段已結束：關閉超音波偵測，turn 偵測立即開放
+        # 'after_turn1'      - 第 1 個彎（vision 硬轉 + 排程補轉）已完成：hard_turn_count=1，
+        #                      車放在補轉後的直線上（一開始看不到下一個 sign）
+        # 'after_turn2'      - 第 2 個彎已完成：hard_turn_count=2，下一個 sign 直接走 T3 流程
+        # 'after_turn3'      - T3 已完成：啟動即進入緩衝停車 + 紅綠燈等待，再交棒光達
+        self.start_stage = rospy.get_param('~start_stage', 'full')
+        if self.start_stage != 'full':
+            valid_stages = ('after_ultrasonic', 'after_turn1', 'after_turn2', 'after_turn3')
+            if self.start_stage not in valid_stages:
+                rospy.logwarn("未知的 start_stage '%s'，改以 'full' 完整任務起跑", self.start_stage)
+                self.start_stage = 'full'
+            else:
+                # 所有中途關卡都已過了超音波停止標示那段
+                self.ultrasonic_enabled = False
+                if self.start_stage == 'after_turn1':
+                    self.hard_turn_count = 1
+                elif self.start_stage == 'after_turn2':
+                    self.hard_turn_count = 2
+                elif self.start_stage == 'after_turn3':
+                    self.handoff_started = True
+                    self.handoff_stop_end_time = (rospy.Time.now().to_sec()
+                                                  + self.handoff_stop_duration)
+                rospy.loginfo("[stage] start_stage=%s（hard_turn_count=%d, ultrasonic=off%s）",
+                              self.start_stage, self.hard_turn_count,
+                              ", 直接進入緩衝停車+紅綠燈" if self.start_stage == 'after_turn3' else "")
+
         # Initialize Fuzzy Controller
         self.fuzzy_controller = FuzzyLogicController()
 
@@ -328,6 +356,11 @@ class LaneControllerFuzzy:
 
         # T3 流程一旦啟動，所有 turn_detect 訊號都忽略
         if self.t3_state != T3_INACTIVE:
+            return
+
+        # 交棒中/已交棒：不再理會路標（start_stage=after_turn3 啟動即進 handoff，
+        # 沒有經過 T3 commit、ignore_sign_end_time 不是 inf，需要這層擋）
+        if self.handoff_started or self.handed_off:
             return
 
         # 超音波偵測尚未結束前，整段忽略路標：停止標示常被攝影機誤判成右轉箭頭。
@@ -446,12 +479,19 @@ class LaneControllerFuzzy:
                 self.aligning_sign = False
 
     def _t3_timer_cb(self, event):
-        if self.t3_state == T3_INACTIVE:
-            return
         if self.handed_off:
             return
 
         now = rospy.Time.now().to_sec()
+
+        # T3 未啟動時改看 handoff（緩衝停車 + 紅綠燈等待）。
+        # handoff 由本 timer 驅動而非 lane_callback：停車線前若抓不到車道線、
+        # lane_detect 斷訊，交棒流程照樣前進（start_stage=after_turn3 也靠這裡起跑）。
+        if self.t3_state == T3_INACTIVE:
+            if self.handoff_started:
+                self._handoff_step(now)
+            return
+
         twist = Twist()
 
         # ---- settle 視窗：剛切換狀態後先確定車子完全停下，再開始這個狀態的動作 ----
@@ -588,6 +628,44 @@ class LaneControllerFuzzy:
         self.t3_settle_done = False
         self.cmd_pub.publish(Twist())
 
+    def _handoff_step(self, now):
+        """交棒流程（由 _t3_timer_cb 50 Hz 驅動）：緩衝停車 -> 紅綠燈等待 -> 發 phase。"""
+        # 階段 A：緩衝停車
+        if now < self.handoff_stop_end_time:
+            self.cmd_pub.publish(Twist())
+            return
+
+        # 階段 B：進入 traffic-light 等待狀態（cmd_vel 維持全 0）
+        if not self.in_traffic_light_state:
+            self.in_traffic_light_state = True
+            self.tl_pass_green = False
+            # 起始即視為「剛剛沒偵測到」，no-detect 計時從現在算
+            self.tl_last_detect_time = now
+            rospy.loginfo("[mission] 進入 traffic-light 等待：green 即放行 / 連續 %.1fs 無偵測亦放行",
+                          self.traffic_light_no_detect_timeout)
+
+        # 通過條件 1：本階段內看過 'green'
+        if self.tl_pass_green:
+            self.phase_pub.publish(String(data="lidar_avoid"))
+            self.cmd_pub.publish(Twist())
+            self.handed_off = True
+            self.in_traffic_light_state = False
+            rospy.loginfo("[mission] 看到 green -> /mission/phase = lidar_avoid，lane_controller 靜音")
+            return
+
+        # 通過條件 2：超過 timeout 都沒看到 red/yellow/green
+        if (now - self.tl_last_detect_time) >= self.traffic_light_no_detect_timeout:
+            self.phase_pub.publish(String(data="lidar_avoid"))
+            self.cmd_pub.publish(Twist())
+            self.handed_off = True
+            self.in_traffic_light_state = False
+            rospy.loginfo("[mission] 連續 %.1fs 無紅綠燈偵測 -> /mission/phase = lidar_avoid",
+                          self.traffic_light_no_detect_timeout)
+            return
+
+        # 否則：等待中（可能正看著 red/yellow，或還在累計 no-detect）
+        self.cmd_pub.publish(Twist())
+
     def lane_callback(self, msg):
         now = rospy.Time.now().to_sec()
 
@@ -604,6 +682,11 @@ class LaneControllerFuzzy:
         # ---- Mission handoff 檢查（最高優先級） ----
         # 已交棒：完全靜音，由 lidar_odom_nav 接管 /arduino_vel
         if self.handed_off:
+            return
+
+        # 交棒中（緩衝停車 + 紅綠燈等待）：由 _t3_timer_cb 的 _handoff_step 驅動，
+        # lane_callback 完全不插手（也不再發 cmd_vel，避免兩邊重複發 0）
+        if self.handoff_started:
             return
 
         # ---- Ultrasonic stop（僅在走線最前 X 秒內生效，且僅作用一次） ----
@@ -655,46 +738,6 @@ class LaneControllerFuzzy:
                               self.ultrasonic_below_streak)
                 self.cmd_pub.publish(Twist())
                 return
-
-        # 交棒中：停車並等待，期間忽略循線
-        # （交棒由 T3_FORWARD 完成後在 _t3_timer_cb 內直接設 handoff_started=True 觸發）
-        if self.handoff_started:
-            # 階段 A：緩衝停車
-            if now < self.handoff_stop_end_time:
-                self.cmd_pub.publish(Twist())
-                return
-
-            # 階段 B：進入 traffic-light 等待狀態（cmd_vel 維持全 0）
-            if not self.in_traffic_light_state:
-                self.in_traffic_light_state = True
-                self.tl_pass_green = False
-                # 起始即視為「剛剛沒偵測到」，no-detect 計時從現在算
-                self.tl_last_detect_time = now
-                rospy.loginfo("[mission] 進入 traffic-light 等待：green 即放行 / 連續 %.1fs 無偵測亦放行",
-                              self.traffic_light_no_detect_timeout)
-
-            # 通過條件 1：本階段內看過 'green'
-            if self.tl_pass_green:
-                self.phase_pub.publish(String(data="lidar_avoid"))
-                self.cmd_pub.publish(Twist())
-                self.handed_off = True
-                self.in_traffic_light_state = False
-                rospy.loginfo("[mission] 看到 green -> /mission/phase = lidar_avoid，lane_controller 靜音")
-                return
-
-            # 通過條件 2：超過 timeout 都沒看到 red/yellow/green
-            if (now - self.tl_last_detect_time) >= self.traffic_light_no_detect_timeout:
-                self.phase_pub.publish(String(data="lidar_avoid"))
-                self.cmd_pub.publish(Twist())
-                self.handed_off = True
-                self.in_traffic_light_state = False
-                rospy.loginfo("[mission] 連續 %.1fs 無紅綠燈偵測 -> /mission/phase = lidar_avoid",
-                              self.traffic_light_no_detect_timeout)
-                return
-
-            # 否則：等待中（可能正看著 red/yellow，或還在累計 no-detect）
-            self.cmd_pub.publish(Twist())
-            return
 
         twist = Twist()
         twist.linear.y = 0.0

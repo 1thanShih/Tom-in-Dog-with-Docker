@@ -48,6 +48,12 @@
   <arg name="v_linear"  default="0.30"/>
   <arg name="v_angular" default="1.0"/>
 
+  <!-- ============ lidar_odom 狀態機的距離門檻（可被外部 launch 覆寫） ============ -->
+  <arg name="dist_th_1" default="0.30"/>
+  <arg name="dist_th_2" default="0.30"/>
+  <arg name="dist_th_3" default="0.45"/>
+  <arg name="dist_th_4" default="0.65"/>
+
   <node pkg="rosserial_python" type="serial_node.py" name="arduino_mega_serial_node" output="screen">
       <param name="port" value="/dev/ttyUSB0"/>
       <param name="baud" value="115200"/>
@@ -99,10 +105,10 @@
       <param name="wait_for_phase" value="false"/>
       <param name="v_linear"     value="$(arg v_linear)"/>
       <param name="v_angular"    value="$(arg v_angular)"/>
-      <param name="dist_th_1"    value="0.30"/>
-      <param name="dist_th_2"    value="0.30"/>
-      <param name="dist_th_3"    value="0.45"/>
-      <param name="dist_th_4"    value="0.65"/>
+      <param name="dist_th_1"    value="$(arg dist_th_1)"/>
+      <param name="dist_th_2"    value="$(arg dist_th_2)"/>
+      <param name="dist_th_3"    value="$(arg dist_th_3)"/>
+      <param name="dist_th_4"    value="$(arg dist_th_4)"/>
       <!-- 轉彎慣性補償：實測再調。先給 10 度 + 0.3 秒剎車過渡 -->
       <param name="turn_overshoot_deg" value="10.0"/>
       <param name="turn_tol_deg"       value="2.0"/>
