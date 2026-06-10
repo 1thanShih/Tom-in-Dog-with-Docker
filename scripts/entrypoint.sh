@@ -3,9 +3,16 @@
 # Start the SSH daemon in the background
 /usr/sbin/sshd
 
+# 主機檔案權限：容器以 root 執行，bind mount 內新建的檔案在主機上會變 root 擁有，
+# 導致 MobaXterm/SFTP permission denied。umask 000 讓新檔案任何人可寫（容器執行中也能即時編輯），
+# 編譯後與離開容器時再把擁有者還給主機使用者 (HOST_UID，預設 ubuntu=1000)。
+umask 000
+HOST_UID="${HOST_UID:-1000}"
+
 # Compile the project
 source /opt/ros/noetic/setup.zsh
 catkin_make
+chown -R "$HOST_UID:$HOST_UID" /root/catkin_ws
 source /root/catkin_ws/devel/setup.zsh
 cd /root/catkin_ws
 
@@ -52,4 +59,10 @@ echo " "
 echo "Finish usb port setup"
 echo " "
 
-exec "$@"
+# 執行主要指令（互動 zsh）。不能用 exec，否則離開後無法做最後的權限修復。
+"$@"
+
+# 離開容器前把工作區擁有者還給主機使用者，確保主機端編輯不會 permission denied
+echo "Restoring /root/catkin_ws ownership to host user (uid $HOST_UID)..."
+chown -R "$HOST_UID:$HOST_UID" /root/catkin_ws /root/agent_ref 2>/dev/null
+echo "Done."

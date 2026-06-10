@@ -128,7 +128,7 @@ class LaneControllerFuzzy:
         self.sign_detect_pixel_threshold = rospy.get_param('~sign_detect_pixel_threshold', 5000.0)
         self.sign_offset_threshold = rospy.get_param('~sign_offset_threshold', 50.0)
         self.sign_align_angular = rospy.get_param('~sign_align_angular', 0.5)
-        self.scan_angular_z = rospy.get_param('~scan_angular_z', 0.5)
+        self.scan_angular_z = rospy.get_param('~scan_angular_z', 1.0)
         
         # Turn state
         self.hard_turn_count = 0  # 紀錄大轉彎次數
@@ -191,14 +191,22 @@ class LaneControllerFuzzy:
         self.t3_align_timeout         = rospy.get_param('~t3_align_timeout', 2.0)          # s
         self.t3_forward_speed         = rospy.get_param('~t3_forward_speed', 0.15)         # m/s
         self.t3_forward_dist          = rospy.get_param('~t3_forward_dist', 0.1)           # m
+        # 每個 T3 動作之間的靜止 settle 時間：切換狀態後先發全 0 cmd 確保車子完全停下，
+        # settle 結束才開始下一個動作（避免校正/煞停後馬上再移動造成偏移）。
+        self.t3_settle_duration       = rospy.get_param('~t3_settle_duration', 0.5)        # s
         self.t3_state = T3_INACTIVE
-        self.t3_turn_accum = 0.0       # 由 odom_callback 累積（進 T3_TURN 時歸零）
+        self.t3_turn_accum = 0.0       # 由 odom_callback 累積（settle 結束進 T3_TURN 動作時歸零）
         self.t3_align_entry_time = 0.0
+        # settle 視窗：t3_settle_done=False 表示剛切到新狀態、還在靜止等車停。
+        self.t3_settle_until = 0.0
+        self.t3_settle_done = True
         self.t3_forward_start_x = 0.0
         self.t3_forward_start_y = 0.0
         # 緩存最新 LaneData（給 T3_ALIGN 用，因為 T3 期間 lane_callback 早 return）
         self.last_lane_angle = None
         self.last_lane_offset = None
+        # 前瞻 anchor 的 angle（看比較前方的車道方向），只給轉彎後 T3_ALIGN 對正用。
+        self.last_lane_angle_far = None
         self.last_lane_data_time = 0.0
         # /odometry 追蹤
         self.have_odom = False
@@ -349,8 +357,11 @@ class LaneControllerFuzzy:
             # === 第三次 visual：用 turn_pixel_threshold_3 commit T3 流程 ===
             if self.hard_turn_count >= 2:
                 if msg.pixel_size >= self.turn_pixel_threshold_3:
+                    # 切到 T3_INITIAL_ALIGN，並先進入 settle（靜止）視窗確保車子停穩，
+                    # settle 結束後 _t3_timer_cb 才真正開始對齊動作。
+                    self.t3_settle_until = now + self.t3_settle_duration
+                    self.t3_settle_done = False
                     self.t3_state = T3_INITIAL_ALIGN
-                    self.t3_align_entry_time = now
                     # T3 期間鎖死，後續 sign 通通忽略（_t3_timer_cb 也會擋）
                     self.ignore_sign_end_time = float('inf')
                     self.aligning_sign = False
@@ -439,6 +450,23 @@ class LaneControllerFuzzy:
         now = rospy.Time.now().to_sec()
         twist = Twist()
 
+        # ---- settle 視窗：剛切換狀態後先確定車子完全停下，再開始這個狀態的動作 ----
+        # 解決「校正/煞停後馬上又移動造成偏移」：每個 T3 動作之間都靜止 t3_settle_duration 秒。
+        if not self.t3_settle_done:
+            if now < self.t3_settle_until:
+                self.cmd_pub.publish(Twist())   # 持續送 0，確保 Arduino 真的停住
+                return
+            # settle 結束 -> 該狀態動作正式開始，做與「動作起點」相關的初始化
+            self.t3_settle_done = True
+            if self.t3_state == T3_TURN:
+                self.t3_turn_accum = 0.0
+            elif self.t3_state in (T3_INITIAL_ALIGN, T3_ALIGN):
+                # 對齊 timeout 從動作真正開始才起算，不把 settle 時間算進去
+                self.t3_align_entry_time = now
+            elif self.t3_state == T3_FORWARD:
+                self.t3_forward_start_x = self.cur_x
+                self.t3_forward_start_y = self.cur_y
+
         # ---- T3_INITIAL_ALIGN: 停車用 LaneData.angle 對正，timeout 直接放行 ----
         # 重用 t3_align_* 參數，邏輯與下方 T3_ALIGN 一致；對正完進 T3_APPROACH 直走。
         if self.t3_state == T3_INITIAL_ALIGN:
@@ -448,8 +476,7 @@ class LaneControllerFuzzy:
             if elapsed >= self.t3_align_timeout:
                 rospy.logwarn("[T3] INITIAL_ALIGN timeout (%.1fs) -> 放行進入 T3_APPROACH",
                               self.t3_align_timeout)
-                self.t3_state = T3_APPROACH
-                self.cmd_pub.publish(Twist())
+                self._t3_begin(T3_APPROACH, now)
                 return
 
             # 有近期 LaneData -> 用 angle 對正
@@ -458,8 +485,7 @@ class LaneControllerFuzzy:
                 angle = self.last_lane_angle
                 if abs(angle) <= self.t3_align_tol_deg:
                     rospy.loginfo("[T3] INITIAL_ALIGN 完成 (angle=%.1f deg) -> T3_APPROACH", angle)
-                    self.t3_state = T3_APPROACH
-                    self.cmd_pub.publish(Twist())
+                    self._t3_begin(T3_APPROACH, now)
                     return
                 # angle > 0 = 車偏右 -> 左轉（正角速度），fuzzy 控制器同慣例
                 twist.angular.z = self.t3_align_angular if angle > 0 else -self.t3_align_angular
@@ -476,9 +502,9 @@ class LaneControllerFuzzy:
                     and self.last_ultrasonic_cm <= self.t3_ultrasonic_threshold):
                 rospy.loginfo("[T3] APPROACH 完成 (ultra=%.1f cm <= %.1f) -> T3_TURN",
                               self.last_ultrasonic_cm, self.t3_ultrasonic_threshold)
-                self.t3_state = T3_TURN
-                self.t3_turn_accum = 0.0
-                self.cmd_pub.publish(Twist())  # 一筆停車緩衝
+                # settle 結束才把 t3_turn_accum 歸零（見 settle 視窗），避免靜止期間
+                # odom 漂移被算進轉彎角度。
+                self._t3_begin(T3_TURN, now)
                 return
             twist.linear.x = self.t3_approach_speed
             twist.angular.z = 0.0
@@ -494,14 +520,14 @@ class LaneControllerFuzzy:
             if abs(self.t3_turn_accum) >= (target - tol):
                 rospy.loginfo("[T3] TURN 完成 (Δyaw=%.1f deg) -> T3_ALIGN",
                               math.degrees(self.t3_turn_accum))
-                self.t3_state = T3_ALIGN
-                self.t3_align_entry_time = now
-                self.cmd_pub.publish(Twist())
+                self._t3_begin(T3_ALIGN, now)
                 return
             self.cmd_pub.publish(twist)
             return
 
-        # ---- T3_ALIGN: 用 LaneData.angle 原地對正，timeout 直接放行 ----
+        # ---- T3_ALIGN: 用前瞻 anchor 的 angle_far 原地對正，timeout 直接放行 ----
+        # 轉完 90° 後改參考「比較前方」的車道方向（angle_far），近處 anchor 剛轉完
+        # 容易抓到不完整/歪斜的線，前瞻點較穩定。其餘對正邏輯與 T3_INITIAL_ALIGN 相同。
         if self.t3_state == T3_ALIGN:
             twist.linear.x = 0.0
             elapsed = now - self.t3_align_entry_time
@@ -509,16 +535,16 @@ class LaneControllerFuzzy:
             if elapsed >= self.t3_align_timeout:
                 rospy.logwarn("[T3] ALIGN timeout (%.1fs) -> 放行進入 T3_FORWARD",
                               self.t3_align_timeout)
-                self._enter_t3_forward()
+                self._t3_begin(T3_FORWARD, now)
                 return
 
-            # 有近期 LaneData -> 用 angle 對正
-            if (self.last_lane_angle is not None
+            # 有近期 LaneData -> 用前瞻 angle_far 對正
+            if (self.last_lane_angle_far is not None
                     and (now - self.last_lane_data_time) < 0.5):
-                angle = self.last_lane_angle
+                angle = self.last_lane_angle_far
                 if abs(angle) <= self.t3_align_tol_deg:
                     rospy.loginfo("[T3] ALIGN 完成 (angle=%.1f deg) -> T3_FORWARD", angle)
-                    self._enter_t3_forward()
+                    self._t3_begin(T3_FORWARD, now)
                     return
                 # angle > 0 = 車偏右 -> 左轉（正角速度），fuzzy 控制器同慣例
                 twist.angular.z = self.t3_align_angular if angle > 0 else -self.t3_align_angular
@@ -546,10 +572,16 @@ class LaneControllerFuzzy:
             self.cmd_pub.publish(twist)
             return
 
-    def _enter_t3_forward(self):
-        self.t3_state = T3_FORWARD
-        self.t3_forward_start_x = self.cur_x
-        self.t3_forward_start_y = self.cur_y
+    def _t3_begin(self, next_state, now):
+        """切到下一個 T3 狀態，並先進入 settle（靜止）視窗。
+
+        settle 期間 _t3_timer_cb 只送全 0 cmd，等 t3_settle_duration 秒、確認車子完全
+        停下後，才在 settle 結束時做該狀態的起點初始化（turn 歸零 / align 計時 / forward
+        起點座標）並開始動作。避免上一個動作的殘餘速度讓下一個動作一起跑造成偏移。
+        """
+        self.t3_state = next_state
+        self.t3_settle_until = now + self.t3_settle_duration
+        self.t3_settle_done = False
         self.cmd_pub.publish(Twist())
 
     def lane_callback(self, msg):
@@ -558,6 +590,7 @@ class LaneControllerFuzzy:
         # 緩存最新 LaneData（T3_ALIGN 由 timer 直接讀，不依賴 lane_callback 觸發）
         self.last_lane_angle = msg.angle
         self.last_lane_offset = msg.offset
+        self.last_lane_angle_far = msg.angle_far
         self.last_lane_data_time = now
 
         # T3 流程啟動後，由 _t3_timer_cb 全權控制 cmd_vel，lane_callback 不再插手

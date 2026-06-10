@@ -251,6 +251,9 @@ class Config:
     # Ratio (0‑1) of image height where the anchor point is placed. 0.85 places
     # the measurement line near the bottom of the image.
     ANCHOR_RATIO: float = 0.8
+    # 前瞻 anchor 的高度比例（較小 = 影像更上方 = 車前更遠處）。只用來算 offset_far /
+    # angle_far，提供給轉彎後對正（T3_ALIGN）參考比較前方的車道方向。
+    ALIGN_ANCHOR_RATIO: float = 0.5
     # Number of recent lane‑width samples kept for width‑estimation when only one
     # side is visible.
     LANE_WIDTH_HISTORY_LEN: int = 30
@@ -805,9 +808,15 @@ Sign convention (spec §9):
 
 
 
-def _anchor_xy(cfg: Config, frame_width: int, frame_height: int) -> tuple[int, int]:
+def _anchor_xy(
+    cfg: Config,
+    frame_width: int,
+    frame_height: int,
+    anchor_ratio: float | None = None,
+) -> tuple[int, int]:
     car_x = frame_width // 2
-    anchor_y = int(frame_height * cfg.ANCHOR_RATIO)
+    ratio = cfg.ANCHOR_RATIO if anchor_ratio is None else anchor_ratio
+    anchor_y = int(frame_height * ratio)
     return car_x, anchor_y
 
 def _mean_width(history: list[float]) -> float | None:
@@ -833,9 +842,14 @@ def measure_at_anchor(
     lane_width_history: list[float],
     frame_width: int,
     frame_height: int,
+    anchor_ratio: float | None = None,
 ) -> MeasureResult:
-    """Compute offset & yaw at the anchor row directly from the raw point contours."""
-    car_x, anchor_y = _anchor_xy(cfg, frame_width, frame_height)
+    """Compute offset & yaw at the anchor row directly from the raw point contours.
+
+    ``anchor_ratio`` overrides ``cfg.ANCHOR_RATIO`` for this call only (used to
+    measure a second, look-ahead anchor for post-turn alignment).
+    """
+    car_x, anchor_y = _anchor_xy(cfg, frame_width, frame_height, anchor_ratio)
 
     def avg_x_in_band(points: np.ndarray | None, band_half: int = 15) -> float | None:
         if points is None or len(points) == 0:
@@ -1288,6 +1302,7 @@ class LaneDetectNode:
         cfg_kwargs['STRICT_ROI'] = rospy.get_param('~strict_roi', default_cfg.STRICT_ROI)
         cfg_kwargs['MIN_CONTOUR_AREA'] = float(rospy.get_param('~min_contour_area', default_cfg.MIN_CONTOUR_AREA))
         cfg_kwargs['ANCHOR_RATIO'] = float(rospy.get_param('~anchor_ratio', default_cfg.ANCHOR_RATIO))
+        cfg_kwargs['ALIGN_ANCHOR_RATIO'] = float(rospy.get_param('~align_anchor_ratio', default_cfg.ALIGN_ANCHOR_RATIO))
         cfg_kwargs['LANE_WIDTH_HISTORY_LEN'] = int(rospy.get_param('~lane_width_history_len', default_cfg.LANE_WIDTH_HISTORY_LEN))
         cfg_kwargs['ENABLE_YAW_B'] = rospy.get_param('~enable_yaw_b', default_cfg.ENABLE_YAW_B)
         cfg_kwargs['MAX_PREDICT_FRAMES'] = int(rospy.get_param('~max_predict_frames', default_cfg.MAX_PREDICT_FRAMES))
@@ -1312,6 +1327,8 @@ class LaneDetectNode:
         # Initialize Pipeline Modules
         self.tracker = LaneTracker(self.cfg)
         self.smoother = LaneSmoother(self.cfg)
+        # 前瞻 anchor 的獨立平滑器，不可與近處 anchor 共用 filter 狀態。
+        self.smoother_far = LaneSmoother(self.cfg)
         self.lane_width_history = deque(maxlen=self.cfg.LANE_WIDTH_HISTORY_LEN)
         
         self.frame_idx = 0
@@ -1366,7 +1383,15 @@ class LaneDetectNode:
         obs = self.tracker.update(raw, frame.width)
         meas = measure_at_anchor(obs, self.cfg, list(self.lane_width_history), frame.width, frame.height)
         smoothed = self.smoother.update(meas)
-        
+
+        # 前瞻 anchor：同一幀的觀測 obs，改在更前方的列上量測，獨立平滑後填到 *_far。
+        meas_far = measure_at_anchor(
+            obs, self.cfg, list(self.lane_width_history),
+            frame.width, frame.height,
+            anchor_ratio=self.cfg.ALIGN_ANCHOR_RATIO,
+        )
+        smoothed_far = self.smoother_far.update(meas_far)
+
         if meas.status == STATUS_OK and meas.lane_width_raw is not None:
             if meas.lane_width_raw > 0:
                 self.lane_width_history.append(meas.lane_width_raw)
@@ -1374,6 +1399,8 @@ class LaneDetectNode:
         msg = LaneData()
         msg.offset = smoothed.offset_px if smoothed.offset_px is not None else 0.0
         msg.angle = smoothed.yaw_deg if smoothed.yaw_deg is not None else 0.0
+        msg.offset_far = smoothed_far.offset_px if smoothed_far.offset_px is not None else 0.0
+        msg.angle_far = smoothed_far.yaw_deg if smoothed_far.yaw_deg is not None else 0.0
         self.lane_pub.publish(msg)
         
         if self.binary_pub.get_num_connections() > 0:

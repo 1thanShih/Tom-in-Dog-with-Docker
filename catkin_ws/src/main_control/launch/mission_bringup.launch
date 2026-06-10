@@ -30,7 +30,7 @@
   <arg name="cmd_vel_topic" default="/arduino_vel"/>
 
   <!-- 光達擷取扇形 -->
-  <arg name="front_angle_range"      default="5.0"/>
+  <arg name="front_angle_range"      default="10.0"/>
   <arg name="front_angle_offset_deg" default="180.0"/>
 
   <!-- 里程計參數 -->
@@ -51,7 +51,7 @@
 
   <!-- 第 3 次 visual 轉彎新流程（取代寫死 hard turn） -->
   <arg name="turn_pixel_threshold_3"   default="8000.0"/>
-  <arg name="t3_ultrasonic_threshold"  default="4"/>     <!-- cm -->
+  <arg name="t3_ultrasonic_threshold"  default="7.9"/>     <!-- cm -->
   <arg name="t3_approach_speed"        default="0.15"/>     <!-- m/s -->
   <arg name="t3_odom_turn_angular"     default="1.0"/>     <!-- rad/s -->
   <arg name="t3_odom_turn_tol_deg"     default="5.0"/>     <!-- deg -->
@@ -60,6 +60,7 @@
   <arg name="t3_align_timeout"         default="2.0"/>     <!-- s -->
   <arg name="t3_forward_speed"         default="0.15"/>    <!-- m/s -->
   <arg name="t3_forward_dist"          default="0.10"/>     <!-- m -->
+  <arg name="t3_settle_duration"       default="0.5"/>      <!-- s：每個 T3 動作之間靜止等車停的時間 -->
 
   <!-- 超音波停車（走線最前 X 秒內偵測停止標示，遇到後停車；標示移走後恢復且不再偵測） -->
   <!-- ultrasonic_initial_blank: watch 視窗開頭忽略超音波讀數的秒數（過濾啟動瞬間雜訊） -->
@@ -72,8 +73,10 @@
   <arg name="ultrasonic_stable_count"       default="3"/>
 
   <!-- 丟失路標時的找標流程：先倒退 backup_duration 秒，再切到左右掃描 -->
+  <!-- scan_angular_z: 倒退後左右掃描的擺動角速度 (rad/s)，越大擺幅越大 -->
   <arg name="lost_sign_backup_duration"     default="0.8"/>
   <arg name="lost_sign_backup_speed"        default="0.2"/>
+  <arg name="scan_angular_z"                default="1.0"/>
 
 
   <!-- ============ 共用底層：rosserial ============ -->
@@ -140,6 +143,8 @@
     <param name="strict_roi"            value="true"/>
     <param name="min_contour_area"      value="500.0"/>
     <param name="anchor_ratio"          value="0.83"/>
+    <!-- 前瞻 anchor：較小 = 看更前方，供轉彎後 T3_ALIGN 對正參考 angle_far -->
+    <param name="align_anchor_ratio"    value="0.7"/>
     <param name="lane_width_history_len" value="30"/>
     <param name="enable_yaw_b"          value="true"/>
     <param name="max_predict_frames"    value="15"/>
@@ -167,13 +172,13 @@
     <param name="base_speed"  value="0.3"/>
     <param name="max_angular" value="1.1"/>
 
-    <param name="turn_pixel_threshold_1" value="25000.0"/>
+    <param name="turn_pixel_threshold_1" value="23000.0"/>
     <param name="hard_turn_angular_1"    value="1.7"/>
     <param name="hard_turn_duration_1"   value="0.75"/>
 
     <param name="turn_pixel_threshold_2" value="25000.0"/>
     <param name="hard_turn_angular_2"    value="1.8"/>
-    <param name="hard_turn_duration_2"   value="1.0"/>
+    <param name="hard_turn_duration_2"   value="1.3"/>
 
     <param name="hard_turn_cooldown"           value="1"/>
     <param name="sign_detect_pixel_threshold"  value="8000.0"/>
@@ -185,9 +190,9 @@
     <param name="scheduled_turn_duration" value="0.93"/>
 
     <!-- 第二段 scheduled turn：在第 2 次 vision 硬轉完成後 delay 秒，再做一次同方向硬轉 -->
-    <param name="scheduled_turn_delay_2"    value="3.2"/>
+    <param name="scheduled_turn_delay_2"    value="3.5"/>
     <param name="scheduled_turn_angular_2"  value="0.9"/>
-    <param name="scheduled_turn_duration_2" value="0.5"/>
+    <param name="scheduled_turn_duration_2" value="0.7"/>
 
     <!-- 任務交棒緩衝停車時間（T3_FORWARD 完成 -> 停這麼久 -> 進紅綠燈等待） -->
     <param name="handoff_stop_duration"   value="$(arg handoff_stop_duration)"/>
@@ -203,6 +208,7 @@
     <!-- 丟失路標時的找標流程：先倒退 backup_duration 秒，再切到左右掃描 -->
     <param name="lost_sign_backup_duration"   value="$(arg lost_sign_backup_duration)"/>
     <param name="lost_sign_backup_speed"      value="$(arg lost_sign_backup_speed)"/>
+    <param name="scan_angular_z"              value="$(arg scan_angular_z)"/>
 
     <!-- 紅綠燈等待：handoff 緩衝停車後進入，green 或連續 no_detect_timeout 秒無偵測即放行 -->
     <param name="traffic_light_topic"             value="$(arg traffic_light_topic)"/>
@@ -219,6 +225,7 @@
     <param name="t3_align_timeout"        value="$(arg t3_align_timeout)"/>
     <param name="t3_forward_speed"        value="$(arg t3_forward_speed)"/>
     <param name="t3_forward_dist"         value="$(arg t3_forward_dist)"/>
+    <param name="t3_settle_duration"      value="$(arg t3_settle_duration)"/>
 
     <remap from="arduino_vel" to="$(arg cmd_vel_topic)"/>
   </node>

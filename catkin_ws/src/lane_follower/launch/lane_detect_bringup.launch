@@ -100,5 +100,12 @@
         <param name="scheduled_turn_delay" value="5.3" />
         <param name="scheduled_turn_angular" value="1.8" />
         <param name="scheduled_turn_duration" value="0.9" />
+
+        <!-- 丟失路標尋找：先倒退、再左右掃描 -->
+        <!-- lost_sign_backup_speed：倒退速度 (m/s)，lost_sign_backup_duration：倒退時間 (s) -->
+        <param name="lost_sign_backup_speed" value="0.1" />
+        <param name="lost_sign_backup_duration" value="0.8" />
+        <!-- scan_angular_z：倒退後左右掃描的擺動角速度 (rad/s)，越大擺幅越大 -->
+        <param name="scan_angular_z" value="1.0" />
     </node>
 </launch>

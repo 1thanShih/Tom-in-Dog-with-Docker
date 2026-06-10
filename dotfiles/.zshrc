@@ -116,3 +116,14 @@ source $ZSH/oh-my-zsh.sh
 # ros setup
 source ~/catkin_ws/devel/setup.zsh
 source /opt/ros/noetic/setup.zsh
+# === 主機檔案權限修正 (host file ownership fix) ===
+# 容器以 root 執行，新建檔案在主機上會變 root 擁有，導致 MobaXterm/SFTP 編輯 permission denied。
+# umask 000：新檔案任何人可寫，容器執行中主機端也能即時編輯。
+# catkin_make 包一層：編譯完自動把工作區擁有者還給主機使用者 (HOST_UID，預設 ubuntu=1000)。
+umask 000
+catkin_make() {
+  command catkin_make "$@"
+  local ret=$?
+  chown -R "${HOST_UID:-1000}:${HOST_UID:-1000}" /root/catkin_ws 2>/dev/null
+  return $ret
+}
