@@ -318,12 +318,14 @@ class LaneControllerFuzzy:
         if self.t3_state != T3_INACTIVE:
             return
 
-        # 超音波 watch 視窗內整段忽略路標：停止標示常被攝影機誤判成右轉箭頭。
-        # 視窗結束（lane_start_time 已超過 ultrasonic_watch_duration）或尚未開始走線
-        # （lane_start_time is None）就放行。一旦 ultrasonic_enabled = False 也視為視窗結束。
-        if (self.ultrasonic_enabled
-                and self.lane_start_time is not None
-                and (now - self.lane_start_time) < self.ultrasonic_watch_duration):
+        # 超音波偵測尚未結束前，整段忽略路標：停止標示常被攝影機誤判成右轉箭頭。
+        # ultrasonic_enabled 在 __init__ 即為 True，僅在以下兩種情況轉 False：
+        #   (a) 停車 -> 標示移走 (>= resume_threshold) -> 解除停車並關閉偵測
+        #   (b) watch_duration 視窗過期且尚未觸發停車
+        # 兩者都代表「超音波偵測這段已結束」，之後才開放 turn 偵測。
+        # 注意：不可以用 lane_start_time + watch_duration 判斷，因為 lane_callback
+        # 第一次跑之前 lane_start_time 為 None，turn_callback 會搶先放行。
+        if self.ultrasonic_enabled:
             return
 
         # 如果目前正在大轉彎或是處於轉彎後的冷卻期，先忽略新的標誌避免重複觸發或影響循線
