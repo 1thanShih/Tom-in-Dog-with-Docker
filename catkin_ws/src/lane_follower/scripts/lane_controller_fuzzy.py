@@ -16,17 +16,23 @@ except ImportError:
     sys.exit(1)
 
 
-# ---- 第 3 次 visual 轉彎的新流程狀態 ----
-# T3_INACTIVE -> (偵測到 3rd sign 且 px >= turn_pixel_threshold_3)
-# T3_APPROACH -> (ultrasonic <= t3_ultrasonic_threshold)
-# T3_TURN     -> (odom 右轉 90 度完成)
-# T3_ALIGN    -> (LaneData.angle 對正 / timeout)
-# T3_FORWARD  -> (odom 直走 t3_forward_dist) -> 設 handoff_started 進入紅綠燈流程
-T3_INACTIVE = 0
-T3_APPROACH = 1
-T3_TURN     = 2
-T3_ALIGN    = 3
-T3_FORWARD  = 4
+# ---- 第 3 次 visual 轉彎的流程狀態 ----
+# T3_INACTIVE      -> (偵測到 3rd sign 且 px >= turn_pixel_threshold_3)
+# T3_INITIAL_ALIGN -> (停車用 LaneData.angle 對正 / timeout)
+# T3_APPROACH      -> (純直走 t3_approach_speed，等 ultrasonic <= t3_ultrasonic_threshold)
+# T3_TURN          -> (odom 右轉 90 度完成)
+# T3_ALIGN         -> (LaneData.angle 對正 / timeout)
+# T3_FORWARD       -> (odom 直走 t3_forward_dist) -> 設 handoff_started 進入紅綠燈流程
+T3_INACTIVE      = 0
+T3_INITIAL_ALIGN = 1
+T3_APPROACH      = 2
+T3_TURN          = 3
+T3_ALIGN         = 4
+T3_FORWARD       = 5
+
+
+
+
 
 class FuzzyLogicController:
     """
@@ -167,13 +173,14 @@ class LaneControllerFuzzy:
         self.tl_pass_green = False
         self.tl_last_detect_time = 0.0
 
-        # ---- 第 3 次 visual 轉彎的新流程（取代寫死 hard turn）----
-        # 1. 偵測 3rd sign 且 px >= turn_pixel_threshold_3 -> T3_APPROACH
-        # 2. T3_APPROACH: 用 t3_approach_speed 慢速靠近，有 sign 時繼續走 offset 對齊，
-        #    sign 丟失就直走。等 /ultrasonic <= t3_ultrasonic_threshold -> T3_TURN
-        # 3. T3_TURN: 原地右轉 90 度（odom yaw 累積差量判斷）-> T3_ALIGN
-        # 4. T3_ALIGN: 用 LaneData.angle 原地對正（容差 t3_align_tol_deg），timeout 直接放行
-        # 5. T3_FORWARD: odom 直走 t3_forward_dist 公尺 -> 設 handoff_started 進入緩衝停車 + 紅綠燈
+        # ---- 第 3 次 visual 轉彎的流程（取代寫死 hard turn）----
+        # 1. 偵測 3rd sign 且 px >= turn_pixel_threshold_3 -> T3_INITIAL_ALIGN
+        # 2. T3_INITIAL_ALIGN: 停車用 LaneData.angle 對正（重用 t3_align_*），timeout 直接放行
+        # 3. T3_APPROACH: 用 t3_approach_speed 純直走（angular=0），
+        #    等 /ultrasonic <= t3_ultrasonic_threshold -> T3_TURN
+        # 4. T3_TURN: 原地右轉 90 度（odom yaw 累積差量判斷）-> T3_ALIGN
+        # 5. T3_ALIGN: 用 LaneData.angle 原地對正（容差 t3_align_tol_deg），timeout 直接放行
+        # 6. T3_FORWARD: odom 直走 t3_forward_dist 公尺 -> 設 handoff_started 進入緩衝停車 + 紅綠燈
         self.turn_pixel_threshold_3   = rospy.get_param('~turn_pixel_threshold_3', 25000.0)
         self.t3_ultrasonic_threshold  = rospy.get_param('~t3_ultrasonic_threshold', 8.0)   # cm
         self.t3_approach_speed        = rospy.get_param('~t3_approach_speed', 0.1)         # m/s
@@ -202,17 +209,30 @@ class LaneControllerFuzzy:
 
         # ---- Ultrasonic stop（走線最前 X 秒內偵測停止標示）----
         # 從第一次收到 lane_detect 起算 ultrasonic_watch_duration 秒內，
-        # 若 /ultrasonic (Float32, cm) < stop_threshold 視為遇到停止標示，停車（發全 0 cmd）。
+        # 若 /ultrasonic (Float32, cm) 連續 ultrasonic_stable_count 次 < stop_threshold
+        # 視為遇到停止標示，停車（發全 0 cmd）。
         # 等到值回升 >= resume_threshold 視為標示被移走，恢復走線，並從此關閉偵測（即使視窗未過）。
         # 視窗過期且尚未觸發停車 -> 直接關閉偵測。
+        # 此外 watch_duration 期間 turn_callback 整段忽略，避免停止標示被攝影機誤判成右轉。
+        # 視窗開頭 ultrasonic_initial_blank 秒不採信任何超音波讀數（過濾上電瞬間的雜訊）。
         self.ultrasonic_topic = rospy.get_param('~ultrasonic_topic', '/ultrasonic')
         self.ultrasonic_watch_duration = rospy.get_param('~ultrasonic_watch_duration', 10.0)
         self.ultrasonic_stop_threshold = rospy.get_param('~ultrasonic_stop_threshold', 20.0)
         self.ultrasonic_resume_threshold = rospy.get_param('~ultrasonic_resume_threshold', 25.0)
+        self.ultrasonic_stable_count = int(rospy.get_param('~ultrasonic_stable_count', 3))
+        self.ultrasonic_initial_blank = rospy.get_param('~ultrasonic_initial_blank', 2.0)
         self.lane_start_time = None
         self.ultrasonic_enabled = True
         self.ultrasonic_stopping = False
         self.last_ultrasonic_cm = None
+        self.ultrasonic_below_streak = 0
+
+        # ---- Lost-sign backup（丟失路標時先倒退、再左右掃描） ----
+        # 原本只有 is_scanning 直接左右轉；改成先 is_backing_up 倒退一段時間再切到 is_scanning。
+        self.lost_sign_backup_duration = rospy.get_param('~lost_sign_backup_duration', 0.8)
+        self.lost_sign_backup_speed = rospy.get_param('~lost_sign_backup_speed', 0.1)
+        self.is_backing_up = False
+        self.backup_start_time = 0.0
 
         # Initialize Fuzzy Controller
         self.fuzzy_controller = FuzzyLogicController()
@@ -256,6 +276,13 @@ class LaneControllerFuzzy:
 
     def ultrasonic_callback(self, msg):
         self.last_ultrasonic_cm = msg.data
+        # 維護「連續低於 stop_threshold」的計數，給 lane_callback 判斷是否真的觸發停車。
+        # 注意：blank 視窗 / watch 視窗過期等狀態都在 lane_callback 統一判斷，
+        # 這裡只負責更新原始計數。
+        if msg.data < self.ultrasonic_stop_threshold:
+            self.ultrasonic_below_streak += 1
+        else:
+            self.ultrasonic_below_streak = 0
 
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
@@ -291,6 +318,14 @@ class LaneControllerFuzzy:
         if self.t3_state != T3_INACTIVE:
             return
 
+        # 超音波 watch 視窗內整段忽略路標：停止標示常被攝影機誤判成右轉箭頭。
+        # 視窗結束（lane_start_time 已超過 ultrasonic_watch_duration）或尚未開始走線
+        # （lane_start_time is None）就放行。一旦 ultrasonic_enabled = False 也視為視窗結束。
+        if (self.ultrasonic_enabled
+                and self.lane_start_time is not None
+                and (now - self.lane_start_time) < self.ultrasonic_watch_duration):
+            return
+
         # 如果目前正在大轉彎或是處於轉彎後的冷卻期，先忽略新的標誌避免重複觸發或影響循線
         if now < self.ignore_sign_end_time:
             return
@@ -303,21 +338,29 @@ class LaneControllerFuzzy:
             self.last_sign_time = now
             self.approaching_sign = True
 
-            # 若找到了路標，關閉反轉找標的狀態
+            # 若找到了路標，關閉倒退 / 反轉找標的狀態
             if self.is_scanning:
                 self.is_scanning = False
+            if self.is_backing_up:
+                self.is_backing_up = False
 
-            # === 第三次 visual：用 turn_pixel_threshold_3 commit T3 新流程 ===
+            # === 第三次 visual：用 turn_pixel_threshold_3 commit T3 流程 ===
             if self.hard_turn_count >= 2:
                 if msg.pixel_size >= self.turn_pixel_threshold_3:
-                    self.t3_state = T3_APPROACH
+                    self.t3_state = T3_INITIAL_ALIGN
+                    self.t3_align_entry_time = now
                     # T3 期間鎖死，後續 sign 通通忽略（_t3_timer_cb 也會擋）
                     self.ignore_sign_end_time = float('inf')
                     self.aligning_sign = False
+                    self.is_backing_up = False
+                    self.is_scanning = False
+                    self.approaching_sign = False
                     self.scheduled_turn_pending = False
+                    # 先停車一筆，給 _t3_timer_cb 接手前一個明確的停車訊號
+                    self.cmd_pub.publish(Twist())
                     rospy.loginfo(
-                        "[T3] 偵測到第 3 個轉彎標示 (px=%.0f, dir=%s) -> T3_APPROACH，等 ultrasonic <= %.1f cm",
-                        msg.pixel_size, msg.turn_direction, self.t3_ultrasonic_threshold)
+                        "[T3] 偵測到第 3 個轉彎標示 (px=%.0f, dir=%s) -> T3_INITIAL_ALIGN (停車對齊)",
+                        msg.pixel_size, msg.turn_direction)
                     return
                 # 未達 T3 commit 門檻 -> 走 sub-threshold offset 對齊（跟 turn 1/2 一樣）
                 if abs(msg.offset) >= self.sign_offset_threshold:
@@ -394,15 +437,39 @@ class LaneControllerFuzzy:
         now = rospy.Time.now().to_sec()
         twist = Twist()
 
-        # ---- T3_APPROACH: 慢速靠近，sign 在就 offset 對齊、sign 丟就直走，等 ultrasonic 達標 ----
-        if self.t3_state == T3_APPROACH:
-            twist.linear.x = self.t3_approach_speed
-            # sign 還在最近 0.3 秒且需要對齊 -> 套用 align_angular_z
-            if (now - self.last_sign_time) < 0.3 and self.aligning_sign:
-                twist.angular.z = self.align_angular_z
-            else:
-                twist.angular.z = 0.0
+        # ---- T3_INITIAL_ALIGN: 停車用 LaneData.angle 對正，timeout 直接放行 ----
+        # 重用 t3_align_* 參數，邏輯與下方 T3_ALIGN 一致；對正完進 T3_APPROACH 直走。
+        if self.t3_state == T3_INITIAL_ALIGN:
+            twist.linear.x = 0.0
+            elapsed = now - self.t3_align_entry_time
 
+            if elapsed >= self.t3_align_timeout:
+                rospy.logwarn("[T3] INITIAL_ALIGN timeout (%.1fs) -> 放行進入 T3_APPROACH",
+                              self.t3_align_timeout)
+                self.t3_state = T3_APPROACH
+                self.cmd_pub.publish(Twist())
+                return
+
+            # 有近期 LaneData -> 用 angle 對正
+            if (self.last_lane_angle is not None
+                    and (now - self.last_lane_data_time) < 0.5):
+                angle = self.last_lane_angle
+                if abs(angle) <= self.t3_align_tol_deg:
+                    rospy.loginfo("[T3] INITIAL_ALIGN 完成 (angle=%.1f deg) -> T3_APPROACH", angle)
+                    self.t3_state = T3_APPROACH
+                    self.cmd_pub.publish(Twist())
+                    return
+                # angle > 0 = 車偏右 -> 左轉（正角速度），fuzzy 控制器同慣例
+                twist.angular.z = self.t3_align_angular if angle > 0 else -self.t3_align_angular
+                self.cmd_pub.publish(twist)
+                return
+
+            # 沒近期 LaneData -> 原地停等 timeout 接管
+            self.cmd_pub.publish(Twist())
+            return
+
+        # ---- T3_APPROACH: 用 t3_approach_speed 純直走（angular=0），等 ultrasonic 達標 ----
+        if self.t3_state == T3_APPROACH:
             if (self.last_ultrasonic_cm is not None
                     and self.last_ultrasonic_cm <= self.t3_ultrasonic_threshold):
                 rospy.loginfo("[T3] APPROACH 完成 (ultra=%.1f cm <= %.1f) -> T3_TURN",
@@ -411,6 +478,8 @@ class LaneControllerFuzzy:
                 self.t3_turn_accum = 0.0
                 self.cmd_pub.publish(Twist())  # 一筆停車緩衝
                 return
+            twist.linear.x = self.t3_approach_speed
+            twist.angular.z = 0.0
             self.cmd_pub.publish(twist)
             return
 
@@ -508,6 +577,7 @@ class LaneControllerFuzzy:
                     and self.last_ultrasonic_cm >= self.ultrasonic_resume_threshold):
                 self.ultrasonic_stopping = False
                 self.ultrasonic_enabled = False
+                self.ultrasonic_below_streak = 0
                 rospy.loginfo("[ultrasonic] %.1f cm >= resume %.1f -> 解除停車，關閉偵測",
                               self.last_ultrasonic_cm, self.ultrasonic_resume_threshold)
                 # 不 return，本筆 lane_detect 繼續往下跑正常走線/硬轉邏輯
@@ -515,14 +585,21 @@ class LaneControllerFuzzy:
                 self.cmd_pub.publish(Twist())
                 return
         elif self.ultrasonic_enabled:
-            if (now - self.lane_start_time) > self.ultrasonic_watch_duration:
+            elapsed_since_lane = now - self.lane_start_time
+            if elapsed_since_lane > self.ultrasonic_watch_duration:
                 # 視窗過期且尚未觸發停車 -> 關閉偵測
                 self.ultrasonic_enabled = False
+                self.ultrasonic_below_streak = 0
+            elif elapsed_since_lane < self.ultrasonic_initial_blank:
+                # 視窗開頭的 blank 區間：不採信超音波讀數（過濾上電瞬間的雜訊）。
+                # 強制把連續低於 stop_threshold 的計數歸零，避免 blank 期間累積到 stable_count。
+                self.ultrasonic_below_streak = 0
             elif (self.last_ultrasonic_cm is not None
-                  and self.last_ultrasonic_cm < self.ultrasonic_stop_threshold):
+                  and self.ultrasonic_below_streak >= self.ultrasonic_stable_count):
                 self.ultrasonic_stopping = True
-                rospy.loginfo("[ultrasonic] %.1f cm < stop %.1f -> 停車等待標示移除",
-                              self.last_ultrasonic_cm, self.ultrasonic_stop_threshold)
+                rospy.loginfo("[ultrasonic] %.1f cm < stop %.1f 連續 %d 次 -> 停車等待標示移除",
+                              self.last_ultrasonic_cm, self.ultrasonic_stop_threshold,
+                              self.ultrasonic_below_streak)
                 self.cmd_pub.publish(Twist())
                 return
 
@@ -592,6 +669,7 @@ class LaneControllerFuzzy:
             self.approaching_sign = False
             self.aligning_sign = False
             self.is_scanning = False
+            self.is_backing_up = False
             rospy.loginfo("Executing scheduled follow-up hard turn (%s) for %.2fs",
                           self.active_hard_turn_dir, self.scheduled_turn_active_duration)
             twist.linear.x = self.base_speed
@@ -599,17 +677,29 @@ class LaneControllerFuzzy:
             self.cmd_pub.publish(twist)
             return
 
-        # 若超過 0.5 秒沒看到標誌，解除靠近狀態並進入尋找路標狀態
+        # 若超過 0.3 秒沒看到標誌，解除靠近狀態並進入「先倒退、再左右掃描」尋找流程
         if self.approaching_sign and (now - self.last_sign_time > 0.3):
             self.approaching_sign = False
             self.aligning_sign = False
-            self.is_scanning = True
-            self.scan_start_time = now
-                
-        # 第二優先級：原本有看到路標但卻丟失，停止向前，左右小幅掃描找尋
+            self.is_backing_up = True
+            self.backup_start_time = now
+
+        # 第二優先級 (a)：丟失路標後先倒退一段時間，再切到左右掃描
+        if self.is_backing_up:
+            if (now - self.backup_start_time) >= self.lost_sign_backup_duration:
+                self.is_backing_up = False
+                self.is_scanning = True
+                self.scan_start_time = now
+            else:
+                twist.linear.x = -abs(self.lost_sign_backup_speed)
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                return
+
+        # 第二優先級 (b)：倒退完後，停止向前，左右小幅掃描找尋
         if self.is_scanning:
             twist.linear.x = 0.0
-            
+
             # 使用週期性切換的方式來左右轉找尋 (左轉1秒 -> 右轉2秒 -> 左轉1秒 -> 不斷循環)
             cycle = (now - self.scan_start_time) % 4.0
             if cycle < 1.0:
@@ -618,7 +708,7 @@ class LaneControllerFuzzy:
                 twist.angular.z = -self.scan_angular_z
             else:
                 twist.angular.z = self.scan_angular_z
-                
+
             self.cmd_pub.publish(twist)
             return
 

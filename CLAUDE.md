@@ -74,13 +74,15 @@ Packages present in this repo:
 1. 開機：`lane_controller_fuzzy` 在 init 時 publish 一次 `"lane"`（latched）。`lidar_odom_nav_node` `wait_for_phase=true`，看到非 `"lidar_avoid"` 就停在 `S_IDLE`，**不發任何 `cmd_vel`**。
 2. 走線階段：fuzzy 控制器全權控制底盤。
    - **第 1、2 次 vision 硬轉**：寫死 hard turn (`hard_turn_*_1` / `hard_turn_*_2`)，完成後 `hard_turn_count++` 並 arm 對應的 `scheduled_turn_*` 在 delay 秒後再做一次同方向硬轉。
-   - **第 3 次 vision 轉彎走 T3 新流程**（取代寫死 hard turn）：偵測到 sign 且 `pixel_size >= ~turn_pixel_threshold_3` 時 commit 並進入由 `_t3_timer_cb` (50 Hz) 驅動的狀態機：
-     1. **T3_APPROACH**：以 `~t3_approach_speed` 慢速直走，sign 還在就照 `sign_align_angular` 對齊；sign 丟失也繼續直走（不 scan）。等 `/ultrasonic <= ~t3_ultrasonic_threshold` (cm) 進下一步。
-     2. **T3_TURN**：原地右轉 90°（寫死，與 sign 報告方向無關），用 `/odometry` yaw 累積差量判斷，角速度 `~t3_odom_turn_angular`、容差 `~t3_odom_turn_tol_deg`。
-     3. **T3_ALIGN**：用 `LaneData.angle` 原地對正，角速度 `~t3_align_angular`、容差 `~t3_align_tol_deg`；超過 `~t3_align_timeout` 直接放行（不管有沒有 LaneData / 是否收斂）。
-     4. **T3_FORWARD**：以 `~t3_forward_speed` odom 直走 `~t3_forward_dist` 公尺。
-     5. 走完直接設 `handoff_started=True`，銜接下方的緩衝停車 + 紅綠燈等待。T3 期間 `lane_callback` early-return、`turn_callback` 整段忽略。
-   - **超音波停止標示**（最前段一次性）：第一次收到 `lane_detect` 起的 `~ultrasonic_watch_duration` 秒視窗內，訂閱 `~ultrasonic_topic` (`/ultrasonic`, std_msgs/Float32, 單位 cm)。值 `< ~ultrasonic_stop_threshold` 視為遇到停止標示 → cmd_vel 全 0；值回升 `>= ~ultrasonic_resume_threshold` 視為標示移走 → 解除停車並**永久關閉超音波偵測**（即使視窗未過）。視窗過期且未觸發過停車也直接關閉。整個任務週期最多觸發一次。
+   - **第 3 次 vision 轉彎走 T3 流程**（取代寫死 hard turn）：偵測到 sign 且 `pixel_size >= ~turn_pixel_threshold_3` 時 commit 並進入由 `_t3_timer_cb` (50 Hz) 驅動的狀態機：
+     1. **T3_INITIAL_ALIGN**：停車用 `LaneData.angle` 原地對正（重用 `~t3_align_*` 參數），timeout 直接放行進下一步。
+     2. **T3_APPROACH**：以 `~t3_approach_speed` 純直走（`angular.z = 0`，不再依 sign 對齊）。等 `/ultrasonic <= ~t3_ultrasonic_threshold` (cm) 進下一步。
+     3. **T3_TURN**：原地右轉 90°（寫死，與 sign 報告方向無關），用 `/odometry` yaw 累積差量判斷，角速度 `~t3_odom_turn_angular`、容差 `~t3_odom_turn_tol_deg`。
+     4. **T3_ALIGN**：用 `LaneData.angle` 原地對正，角速度 `~t3_align_angular`、容差 `~t3_align_tol_deg`；超過 `~t3_align_timeout` 直接放行（不管有沒有 LaneData / 是否收斂）。
+     5. **T3_FORWARD**：以 `~t3_forward_speed` odom 直走 `~t3_forward_dist` 公尺。
+     6. 走完直接設 `handoff_started=True`，銜接下方的緩衝停車 + 紅綠燈等待。T3 期間 `lane_callback` early-return、`turn_callback` 整段忽略。
+   - **超音波停止標示**（最前段一次性）：第一次收到 `lane_detect` 起的 `~ultrasonic_watch_duration` 秒視窗內，訂閱 `~ultrasonic_topic` (`/ultrasonic`, std_msgs/Float32, 單位 cm)。值 `< ~ultrasonic_stop_threshold` 必須**連續 `~ultrasonic_stable_count` 次**（預設 3）才視為遇到停止標示 → cmd_vel 全 0；值回升 `>= ~ultrasonic_resume_threshold` 視為標示移走 → 解除停車並**永久關閉超音波偵測**（即使視窗未過）。視窗開頭 `~ultrasonic_initial_blank` 秒（預設 2.0）內不採信讀數（過濾啟動雜訊）。視窗過期且未觸發過停車也直接關閉。整個任務週期最多觸發一次。**watch 視窗期間 `turn_callback` 整段忽略**，避免停止標示被攝影機誤判成右轉箭頭。
+   - **丟失路標的找標流程**：sign 進入 `approaching_sign` 後若 0.3 秒沒再收到 → 先進 `is_backing_up`，以 `~lost_sign_backup_speed` 倒退 `~lost_sign_backup_duration` 秒；倒退完才切到 `is_scanning` 做左右掃描。期間 turn_callback 偵測到 sign 會同時清掉 `is_backing_up` / `is_scanning`。
 3. 交棒流程（T3_FORWARD 結束後自動觸發，設 `handoff_started=True`）分兩個子階段：
    - **A. 緩衝停車**：停 `~handoff_stop_duration` 秒，cmd_vel 全 0。
    - **B. 紅綠燈等待**：進入此狀態後 cmd_vel 持續全 0，訂閱 `~traffic_light_topic` (`/traffic_light`, std_msgs/String)。
