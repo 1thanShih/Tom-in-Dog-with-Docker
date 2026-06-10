@@ -42,8 +42,7 @@
   <arg name="nav_v_linear"  default="0.30"/>
   <arg name="nav_v_angular" default="1.0"/>
 
-  <!-- 任務交棒參數 -->
-  <!-- <arg name="hard_turn_trigger_count" default="99"/> -->
+  <!-- 任務交棒參數（交棒由 T3_FORWARD 完成自動觸發） -->
   <arg name="handoff_stop_duration"   default="1.0"/>
 
   <!-- 紅綠燈等待（緩衝停車後、交棒給光達避障前） -->
@@ -182,8 +181,7 @@
     <param name="scheduled_turn_angular_2"  value="0.7"/>
     <param name="scheduled_turn_duration_2" value="0.5"/>
 
-    <!-- 任務交棒：第 N 次 vision 硬轉完成後 -->
-    <param name="hard_turn_trigger_count" value="$(arg hard_turn_trigger_count)"/>
+    <!-- 任務交棒緩衝停車時間（T3_FORWARD 完成 -> 停這麼久 -> 進紅綠燈等待） -->
     <param name="handoff_stop_duration"   value="$(arg handoff_stop_duration)"/>
 
     <!-- 超音波停車（僅生效一次，視窗內 < stop 停車，>= resume 解除並關閉偵測） -->

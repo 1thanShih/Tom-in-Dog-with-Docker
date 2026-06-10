@@ -147,10 +147,9 @@ class LaneControllerFuzzy:
         self.scheduled_turn_active_duration = 0.0
 
         # ---- Mission handoff (lane -> lidar_avoid) ----
-        # 第 hard_turn_trigger_count 次 vision 觸發的硬轉完成後，停車 handoff_stop_duration 秒，
-        # 然後 publish /mission/phase = "lidar_avoid"，本節點之後不再發 cmd_vel，
-        # 由 lidar_odom_nav_node 接管底盤。
-        self.hard_turn_trigger_count = rospy.get_param('~hard_turn_trigger_count', 3)
+        # T3_FORWARD 完成後直接設 handoff_started=True，停車 handoff_stop_duration 秒做緩衝，
+        # 然後進紅綠燈等待狀態，放行條件達到後 publish /mission/phase = "lidar_avoid"。
+        # 之後本節點不再發 cmd_vel，由 lidar_odom_nav_node 接管底盤。
         self.handoff_stop_duration = rospy.get_param('~handoff_stop_duration', 1.0)
         self.handoff_started = False
         self.handoff_stop_end_time = 0.0
@@ -527,16 +526,8 @@ class LaneControllerFuzzy:
                 self.cmd_pub.publish(Twist())
                 return
 
-        # 第 N 次 vision 硬轉已結束 -> 啟動交棒流程
-        if (not self.handoff_started
-                and self.hard_turn_count >= self.hard_turn_trigger_count
-                and now >= self.hard_turn_end_time):
-            self.handoff_started = True
-            self.handoff_stop_end_time = now + self.handoff_stop_duration
-            rospy.loginfo("[mission] 第 %d 次硬轉結束 -> 停車 %.1fs 後交棒給 lidar_avoid",
-                          self.hard_turn_trigger_count, self.handoff_stop_duration)
-
         # 交棒中：停車並等待，期間忽略循線
+        # （交棒由 T3_FORWARD 完成後在 _t3_timer_cb 內直接設 handoff_started=True 觸發）
         if self.handoff_started:
             # 階段 A：緩衝停車
             if now < self.handoff_stop_end_time:

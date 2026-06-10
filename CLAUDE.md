@@ -27,7 +27,7 @@ Build a single package: `catkin_make --pkg <package_name>`.
 
 Launch the main mission (走線 → 硬轉觸發 → 光達避障交棒)：
 `roslaunch main_control mission_bringup.launch`
-（常用覆寫：`hard_turn_trigger_count:=3 handoff_stop_duration:=1.0 cmd_vel_topic:=/arduino_vel`）
+（常用覆寫：`handoff_stop_duration:=1.0 cmd_vel_topic:=/arduino_vel`）
 
 Sub-system launches when iterating on a single layer:
 - `roslaunch lane_follower lane_detect_bringup.launch` — 走線 + 轉彎偵測 + fuzzy 控制（不含 lidar / odom）。
@@ -79,9 +79,9 @@ Packages present in this repo:
      2. **T3_TURN**：原地右轉 90°（寫死，與 sign 報告方向無關），用 `/odometry` yaw 累積差量判斷，角速度 `~t3_odom_turn_angular`、容差 `~t3_odom_turn_tol_deg`。
      3. **T3_ALIGN**：用 `LaneData.angle` 原地對正，角速度 `~t3_align_angular`、容差 `~t3_align_tol_deg`；超過 `~t3_align_timeout` 直接放行（不管有沒有 LaneData / 是否收斂）。
      4. **T3_FORWARD**：以 `~t3_forward_speed` odom 直走 `~t3_forward_dist` 公尺。
-     5. 走完直接設 `handoff_started=True`，銜接下方的緩衝停車 + 紅綠燈等待。T3 期間 `lane_callback` early-return、`turn_callback` 整段忽略，`hard_turn_count` 不會推進，所以 `~hard_turn_trigger_count` 在這條路徑上**用不到**（保留給走線階段第 1/2 次硬轉路徑備用）。
+     5. 走完直接設 `handoff_started=True`，銜接下方的緩衝停車 + 紅綠燈等待。T3 期間 `lane_callback` early-return、`turn_callback` 整段忽略。
    - **超音波停止標示**（最前段一次性）：第一次收到 `lane_detect` 起的 `~ultrasonic_watch_duration` 秒視窗內，訂閱 `~ultrasonic_topic` (`/ultrasonic`, std_msgs/Float32, 單位 cm)。值 `< ~ultrasonic_stop_threshold` 視為遇到停止標示 → cmd_vel 全 0；值回升 `>= ~ultrasonic_resume_threshold` 視為標示移走 → 解除停車並**永久關閉超音波偵測**（即使視窗未過）。視窗過期且未觸發過停車也直接關閉。整個任務週期最多觸發一次。
-3. 交棒流程（T3_FORWARD 結束後自動進入；或舊路徑 `hard_turn_count >= ~hard_turn_trigger_count` 觸發）分兩個子階段：
+3. 交棒流程（T3_FORWARD 結束後自動觸發，設 `handoff_started=True`）分兩個子階段：
    - **A. 緩衝停車**：停 `~handoff_stop_duration` 秒，cmd_vel 全 0。
    - **B. 紅綠燈等待**：進入此狀態後 cmd_vel 持續全 0，訂閱 `~traffic_light_topic` (`/traffic_light`, std_msgs/String)。
      - 收到 `'green'` → 立即放行
