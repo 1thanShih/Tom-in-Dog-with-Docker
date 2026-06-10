@@ -35,7 +35,7 @@
     <!-- 車道辨識節點 -->
     <node pkg="lane_follower" type="lane_detect_v2.py" name="lane_detect_node" output="screen">
         <!-- 訂閱上方統一發布出來的 ROS Topic -->
-        <param name="image_topic" value="/camera/image_raw" />
+        <param name="image_topic" value="/camera2/image_raw" />
         <param name="pub_topic" value="lane_detect" />
         <param name="debug_topic" value="lane_detect/image_out" />
         <param name="show_window" value="false" />
@@ -50,7 +50,7 @@
     </node>
 
     <node pkg="lane_follower" type="turn_detect.py" name="turn_detect_node" output="screen">
-        <param name="image_topic" value="/camera2/image_raw" />
+        <param name="image_topic" value="/camera/image_raw" />
         <param name="debug_topic" value="turn_detect/image_out" />
         <param name="show_window" value="false" />
         <!-- 二值化 threshold：'fixed' (推薦) / 'otsu' / 'adaptive'

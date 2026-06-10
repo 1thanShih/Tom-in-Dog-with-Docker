@@ -50,16 +50,16 @@
   <arg name="traffic_light_no_detect_timeout" default="5.0"/>
 
   <!-- 第 3 次 visual 轉彎新流程（取代寫死 hard turn） -->
-  <arg name="turn_pixel_threshold_3"   default="5000.0"/>
-  <arg name="t3_ultrasonic_threshold"  default="10.0"/>     <!-- cm -->
-  <arg name="t3_approach_speed"        default="0.1"/>     <!-- m/s -->
+  <arg name="turn_pixel_threshold_3"   default="8000.0"/>
+  <arg name="t3_ultrasonic_threshold"  default="4"/>     <!-- cm -->
+  <arg name="t3_approach_speed"        default="0.15"/>     <!-- m/s -->
   <arg name="t3_odom_turn_angular"     default="1.0"/>     <!-- rad/s -->
   <arg name="t3_odom_turn_tol_deg"     default="5.0"/>     <!-- deg -->
   <arg name="t3_align_angular"         default="0.4"/>     <!-- rad/s -->
   <arg name="t3_align_tol_deg"         default="3.0"/>     <!-- deg -->
   <arg name="t3_align_timeout"         default="2.0"/>     <!-- s -->
   <arg name="t3_forward_speed"         default="0.15"/>    <!-- m/s -->
-  <arg name="t3_forward_dist"          default="0.12"/>     <!-- m -->
+  <arg name="t3_forward_dist"          default="0.10"/>     <!-- m -->
 
   <!-- 超音波停車（走線最前 X 秒內偵測停止標示，遇到後停車；標示移走後恢復且不再偵測） -->
   <!-- ultrasonic_initial_blank: watch 視窗開頭忽略超音波讀數的秒數（過濾啟動瞬間雜訊） -->
@@ -73,7 +73,7 @@
 
   <!-- 丟失路標時的找標流程：先倒退 backup_duration 秒，再切到左右掃描 -->
   <arg name="lost_sign_backup_duration"     default="0.8"/>
-  <arg name="lost_sign_backup_speed"        default="0.1"/>
+  <arg name="lost_sign_backup_speed"        default="0.2"/>
 
 
   <!-- ============ 共用底層：rosserial ============ -->
@@ -132,7 +132,7 @@
 
   <!-- ============ 階段一：走線 ============ -->
   <node pkg="lane_follower" type="lane_detect_v2.py" name="lane_detect_node" output="screen">
-    <param name="image_topic"  value="/camera/image_raw"/>
+    <param name="image_topic"  value="/camera2/image_raw"/>
     <param name="pub_topic"    value="lane_detect"/>
     <param name="debug_topic"  value="lane_detect/image_out"/>
     <param name="show_window"  value="false"/>
@@ -153,13 +153,13 @@
   </node>
 
   <node pkg="lane_follower" type="turn_detect.py" name="turn_detect_node" output="screen">
-    <param name="image_topic" value="/camera2/image_raw"/>
+    <param name="image_topic" value="/camera/image_raw"/>
     <param name="debug_topic" value="turn_detect/image_out"/>
     <param name="show_window" value="false"/>
     <!-- 二值化 threshold：'fixed' (推薦) / 'otsu' / 'adaptive'
          threshold_value 越小越只抓「真的黑」；灰被當黑 → 調小 -->
     <param name="threshold_method" value="fixed"/>
-    <param name="threshold_value" value="60"/>
+    <param name="threshold_value" value="70"/>
     <param name="invert_binary" value="true"/>
   </node>
 
@@ -167,9 +167,9 @@
     <param name="base_speed"  value="0.3"/>
     <param name="max_angular" value="1.1"/>
 
-    <param name="turn_pixel_threshold_1" value="23000.0"/>
-    <param name="hard_turn_angular_1"    value="1.8"/>
-    <param name="hard_turn_duration_1"   value="0.78"/>
+    <param name="turn_pixel_threshold_1" value="25000.0"/>
+    <param name="hard_turn_angular_1"    value="1.7"/>
+    <param name="hard_turn_duration_1"   value="0.75"/>
 
     <param name="turn_pixel_threshold_2" value="25000.0"/>
     <param name="hard_turn_angular_2"    value="1.8"/>
@@ -181,12 +181,12 @@
     <param name="sign_align_angular"           value="0.2"/>
 
     <param name="scheduled_turn_delay"    value="4.6"/>
-    <param name="scheduled_turn_angular"  value="1.8"/>
-    <param name="scheduled_turn_duration" value="0.88"/>
+    <param name="scheduled_turn_angular"  value="1.81"/>
+    <param name="scheduled_turn_duration" value="0.93"/>
 
     <!-- 第二段 scheduled turn：在第 2 次 vision 硬轉完成後 delay 秒，再做一次同方向硬轉 -->
-    <param name="scheduled_turn_delay_2"    value="3.5"/>
-    <param name="scheduled_turn_angular_2"  value="0.7"/>
+    <param name="scheduled_turn_delay_2"    value="3.2"/>
+    <param name="scheduled_turn_angular_2"  value="0.9"/>
     <param name="scheduled_turn_duration_2" value="0.5"/>
 
     <!-- 任務交棒緩衝停車時間（T3_FORWARD 完成 -> 停這麼久 -> 進紅綠燈等待） -->
